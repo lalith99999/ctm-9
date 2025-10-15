@@ -12,10 +12,11 @@ public interface MatchDao {
     Optional<Match> startMatch(long matchId);
 
     List<Map<String, Object>> liveTournamentCounts();
-    List<Match> getLiveMatchesByTournament(long tournamentId);
+    List<Match> getMatchesByTournament(long tournamentId);
     Optional<Match> findMatch(long matchId);
 
-    boolean lockFirstInnings(long matchId, long battingTeamId, int runs, int wickets, double overs, int extras);
+    boolean lockFirstInnings(long matchId, int runs, int wickets, double overs, int extras);
     boolean lockSecondInnings(long matchId, int runs, int wickets, double overs, int extras);
-	boolean startMatch(long matchId, long tossWinnerId, String tossDecision);
+    boolean finalizeMatch(long matchId);
+    boolean startMatch(long matchId, long tossWinnerId, String tossDecision);
 }

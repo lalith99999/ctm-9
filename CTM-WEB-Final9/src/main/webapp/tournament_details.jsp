@@ -1,5 +1,18 @@
 <%@ page contentType="text/html; charset=UTF-8" %>
 <%@ page import="java.util.*, com.ctm.model.*" %>
+<%!
+  String formatScore(Object runsObj, Object wktsObj, Object oversObj) {
+    if (runsObj == null || wktsObj == null || oversObj == null) return "-";
+    try {
+      int runs = ((Number) runsObj).intValue();
+      int wkts = ((Number) wktsObj).intValue();
+      double overs = ((Number) oversObj).doubleValue();
+      return runs + "/" + wkts + " (" + String.format(java.util.Locale.US, "%.1f", overs) + " ov)";
+    } catch (Exception e) {
+      return "-";
+    }
+  }
+%>
 <%
   String username = (String) session.getAttribute("username");
   String role = (String) session.getAttribute("role");
@@ -11,250 +24,244 @@
   response.setDateHeader("Expires",0);
 
   Tournament tournament = (Tournament) request.getAttribute("tournament");
-  List<Map<String,Object>> todayMatches = (List<Map<String,Object>>) request.getAttribute("todayMatches");
   List<Map<String,Object>> scheduledMatches = (List<Map<String,Object>>) request.getAttribute("scheduledMatches");
-  List<TeamStanding> points = (List<TeamStanding>) request.getAttribute("pointsTable");
-  Map<String, List<String>> teamsPlayers = (Map<String, List<String>>) request.getAttribute("teamsPlayers");
+  List<Map<String,Object>> liveMatches = (List<Map<String,Object>>) request.getAttribute("liveMatches");
+  List<Map<String,Object>> finishedMatches = (List<Map<String,Object>>) request.getAttribute("finishedMatches");
+  List<TeamStanding> standings = (List<TeamStanding>) request.getAttribute("standings");
+  Map<String, List<Map<String,Object>>> teamPlayers = (Map<String, List<Map<String,Object>>>) request.getAttribute("teamPlayers");
 %>
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <title><%= tournament.getName() %> — Tournament Details</title>
-<style>
-/* === THEME VARIABLES === */
-:root {
-  --bg-main: linear-gradient(160deg, #0d1b2a, #1e3a8a);
-  --card-bg: rgba(15, 23, 42, 0.92);
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --text: #f8fafc;
-  --muted: #94a3b8;
-  --radius: 14px;
-  --shadow: 0 4px 22px rgba(0, 0, 0, 0.45);
-  --font: "Poppins", "Segoe UI", sans-serif;
-}
+  <title><%= tournament.getName() %> — Tournament Hub</title>
+  <style>
+    :root {
+      --bg: linear-gradient(160deg, #0d1b2a, #1e3a8a);
+      --panel: rgba(15, 23, 42, 0.92);
+      --sub-panel: rgba(30, 41, 59, 0.9);
+      --accent: #38bdf8;
+      --accent-hover: #0ea5e9;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --radius: 16px;
+      --shadow: 0 18px 32px rgba(0,0,0,0.35);
+      --font: "Poppins", "Segoe UI", sans-serif;
+    }
 
-/* === BASE === */
-body {
-  margin: 0;
-  background: var(--bg-main);
-  color: var(--text);
-  font-family: var(--font);
-  min-height: 100vh;
-  overflow-x: hidden;
-}
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+    }
 
-/* === HEADER === */
-.top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: rgba(15, 23, 42, 0.95);
-  padding: 16px 24px;
-  border-bottom: 2px solid var(--accent);
-  box-shadow: var(--shadow);
-}
-.brand {
-  font-size: 1.3rem;
-  font-weight: 700;
-  color: var(--accent);
-}
-.logout, .back {
-  background: var(--accent);
-  color: white;
-  padding: 8px 14px;
-  border-radius: var(--radius);
-  text-decoration: none;
-  font-weight: 600;
-  transition: 0.3s;
-}
-.logout:hover, .back:hover {
-  background: var(--accent-hover);
-  box-shadow: 0 0 10px rgba(96,165,250,0.5);
-}
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 28px;
+      background: rgba(15, 23, 42, 0.95);
+      border-bottom: 2px solid var(--accent);
+      box-shadow: var(--shadow);
+    }
 
-/* === MAIN CONTENT LAYOUT === */
-.content {
-  display: grid;
-  grid-template-columns: 2.3fr 1fr;
-  gap: 25px;
-  width: 90%;
-  max-width: 1300px;
-  margin: 40px auto;
-}
-.panel {
-  background: var(--card-bg);
-  padding: 25px 30px;
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-}
-h2 {
-  color: var(--accent-hover);
-  font-size: 1.4rem;
-  border-left: 4px solid var(--accent);
-  padding-left: 10px;
-  margin-bottom: 18px;
-}
+    .brand { font-size: 1.35rem; font-weight: 700; color: var(--accent); }
 
-/* === MATCH CARDS === */
-.match {
-  background: rgba(30, 41, 59, 0.85);
-  border: 1px solid rgba(59,130,246,0.3);
-  border-radius: var(--radius);
-  padding: 12px 18px;
-  margin-bottom: 14px;
-  box-shadow: var(--shadow);
-  transition: 0.3s;
-}
-.match:hover {
-  border-color: var(--accent);
-  box-shadow: 0 0 15px rgba(59,130,246,0.4);
-  transform: translateY(-3px);
-}
-.match div:first-child {
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-.match .status {
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 0.85rem;
-  text-transform: capitalize;
-}
-.status.LIVE {
-  background: #16a34a;
-  color: white;
-}
-.status.FINISHED {
-  background: #eab308;
-  color: #1e1e1e;
-}
-.status.SCHEDULED {
-  background: #3b82f6;
-  color: white;
-}
+    .nav a {
+      margin-left: 12px;
+      padding: 8px 16px;
+      border-radius: 12px;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 600;
+      transition: 0.25s;
+    }
 
-/* === TABLES === */
-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: rgba(30, 41, 59, 0.85);
-  border-radius: var(--radius);
-  overflow: hidden;
-  box-shadow: var(--shadow);
-}
-th, td {
-  padding: 10px 12px;
-  text-align: center;
-}
-th {
-  background: rgba(59,130,246,0.2);
-  color: var(--accent-hover);
-}
-tr:nth-child(even) td {
-  background: rgba(255,255,255,0.02);
-}
-tr:hover td {
-  background: rgba(59,130,246,0.07);
-}
+    .nav a:hover { background: var(--accent-hover); box-shadow: 0 0 12px rgba(14,165,233,0.55); }
 
-/* === TEAM BOX === */
-.teamBox {
-  background: rgba(30,41,59,0.85);
-  border-radius: var(--radius);
-  padding: 14px 18px;
-  margin-bottom: 14px;
-  border: 1px solid rgba(59,130,246,0.3);
-  box-shadow: var(--shadow);
-  transition: 0.3s;
-}
-.teamBox:hover {
-  transform: translateY(-3px);
-  border-color: var(--accent);
-  box-shadow: 0 0 15px rgba(59,130,246,0.4);
-}
-.teamBox ul {
-  margin: 0;
-  list-style-type: circle;
-  color: var(--muted);
-  line-height: 1.6;
-}
+    .content {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 26px;
+      width: 92%;
+      max-width: 1280px;
+      margin: 40px auto 60px;
+    }
 
-/* === RESPONSIVE === */
-@media (max-width: 1000px) {
-  .content {
-    grid-template-columns: 1fr;
-  }
-}
-@media (max-width: 768px) {
-  .panel {
-    padding: 18px;
-  }
-  h2 {
-    font-size: 1.2rem;
-  }
-}
-</style></head>
-<body class="user-view">
+    .panel {
+      background: var(--panel);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 28px 32px;
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      font-size: 1.35rem;
+      color: var(--accent);
+      border-left: 4px solid var(--accent);
+      padding-left: 10px;
+    }
+
+    h3 {
+      margin: 18px 0 12px;
+      font-size: 1.1rem;
+      color: var(--accent-hover);
+    }
+
+    .match-card {
+      padding: 16px 18px;
+      background: var(--sub-panel);
+      border-radius: var(--radius);
+      border: 1px solid rgba(56,189,248,0.25);
+      margin-bottom: 12px;
+      box-shadow: 0 12px 22px rgba(15,23,42,0.35);
+    }
+
+    .match-card:last-child { margin-bottom: 0; }
+
+    .match-card .title {
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .match-card .detail { color: var(--muted); font-size: 0.9rem; }
+
+    .empty { color: var(--muted); font-style: italic; margin-bottom: 12px; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      background: var(--sub-panel);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid rgba(148,163,184,0.18);
+      font-size: 0.95rem;
+    }
+
+    th {
+      text-transform: uppercase;
+      font-size: 0.85rem;
+      letter-spacing: 0.08em;
+      background: rgba(14,165,233,0.16);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .players-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      max-height: 720px;
+      overflow-y: auto;
+      padding-right: 6px;
+    }
+
+    .team-box {
+      background: var(--sub-panel);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      border: 1px solid rgba(56,189,248,0.22);
+      box-shadow: 0 12px 22px rgba(15,23,42,0.35);
+    }
+
+    .team-box h4 { margin: 0 0 12px; color: var(--accent); }
+
+    .players-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .players-table th, .players-table td {
+      font-size: 0.85rem;
+      padding: 8px 6px;
+      border-bottom: 1px solid rgba(148,163,184,0.16);
+    }
+
+    .players-table th { text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+
+    .players-table tr:last-child td { border-bottom: none; }
+
+    @media (max-width: 1024px) {
+      .content { grid-template-columns: 1fr; }
+      .players-panel { max-height: none; }
+    }
+
+    @media (max-width: 768px) {
+      .panel { padding: 22px; }
+      h2 { font-size: 1.2rem; }
+    }
+  </style>
+</head>
+<body>
   <div class="top">
     <div class="brand">🏏 <%= tournament.getName() %> — <%= tournament.getFormat() %></div>
-    <div>
-      <a class="back" href="tournament_home.jsp">← All Tournaments</a>
-      &nbsp;
-      <a class="logout" href="logout">Logout</a>
+    <div class="nav">
+      <a href="viewer_tournament.jsp">← All Tournaments</a>
+      <a href="logout">Logout</a>
     </div>
   </div>
 
   <div class="content">
-    <!-- LEFT: Matches + Points -->
     <div>
       <div class="panel">
-        <h2>Today’s Live / Finished Matches</h2>
-        <% if (todayMatches == null || todayMatches.isEmpty()) { %>
-          <p>No live or finished matches today.</p>
-        <% } else {
-             for (Map<String,Object> m : todayMatches) {
-               String status = String.valueOf(m.get("status"));
-               String aTeam = String.valueOf(m.get("teamA"));
-               String bTeam = String.valueOf(m.get("teamB"));
-               String scoreA = m.get("aRuns") + "/" + m.get("aWkts");
-               String scoreB = m.get("bRuns") + "/" + m.get("bWkts");
-        %>
-          <div class="match">
-            <div><b><%= aTeam %></b> vs <b><%= bTeam %></b> — <span class="status <%= status %>"><%= status %></span></div>
-            <div>Score: <%= scoreA %>  |  <%= scoreB %></div>
-            <div><%= m.get("venue") %>  —  <%= m.get("datetime") %></div>
-          </div>
-        <% } } %>
-      </div>
+        <h2>Matches Overview</h2>
 
-      <div class="panel" style="margin-top:18px;">
-        <h2>Scheduled Matches</h2>
+        <h3>Scheduled Matches</h3>
         <% if (scheduledMatches == null || scheduledMatches.isEmpty()) { %>
-          <p>No upcoming matches scheduled.</p>
-        <% } else {
-             for (Map<String,Object> m : scheduledMatches) { %>
-          <div class="match">
-            <div><b><%= m.get("teamA") %></b> vs <b><%= m.get("teamB") %></b></div>
-            <div><%= m.get("datetime") %> — <%= m.get("venue") %></div>
+          <div class="empty">No upcoming fixtures scheduled.</div>
+        <% } else { for (Map<String,Object> m : scheduledMatches) { %>
+          <div class="match-card">
+            <div class="title"><%= m.get("aName") %> vs <%= m.get("bName") %></div>
+            <div class="detail"><%= m.get("datetime") %> — <%= m.get("venue") %></div>
+          </div>
+        <% } } %>
+
+        <h3>Live Matches</h3>
+        <% if (liveMatches == null || liveMatches.isEmpty()) { %>
+          <div class="empty">No matches are live right now.</div>
+        <% } else { for (Map<String,Object> m : liveMatches) { %>
+          <div class="match-card">
+            <div class="title"><%= m.get("aName") %> vs <%= m.get("bName") %></div>
+            <div class="detail">Score: <%= formatScore(m.get("aRuns"), m.get("aWkts"), m.get("aOvers")) %> | <%= formatScore(m.get("bRuns"), m.get("bWkts"), m.get("bOvers")) %></div>
+            <div class="detail">Venue: <%= m.get("venue") %></div>
+          </div>
+        <% } } %>
+
+        <h3>Finished Matches</h3>
+        <% if (finishedMatches == null || finishedMatches.isEmpty()) { %>
+          <div class="empty">No finished matches yet.</div>
+        <% } else { for (Map<String,Object> m : finishedMatches) { %>
+          <div class="match-card">
+            <div class="title"><%= m.get("aName") %> vs <%= m.get("bName") %></div>
+            <div class="detail">Result: <%= m.get("result") != null ? m.get("result") : "Match completed" %></div>
+            <div class="detail">Final Scores: <%= formatScore(m.get("aRuns"), m.get("aWkts"), m.get("aOvers")) %> | <%= formatScore(m.get("bRuns"), m.get("bWkts"), m.get("bOvers")) %></div>
           </div>
         <% } } %>
       </div>
 
-      <div class="panel" style="margin-top:18px;">
+      <div class="panel" style="margin-top:24px;">
         <h2>Points Table</h2>
-        <% if (points == null || points.isEmpty()) { %>
-          <p>No points data available.</p>
+        <% if (standings == null || standings.isEmpty()) { %>
+          <div class="empty">Points table will appear once matches are completed.</div>
         <% } else { %>
           <table>
             <tr><th>Team</th><th>Played</th><th>Points</th><th>NRR</th></tr>
-            <% for (TeamStanding s : points) { %>
+            <% for (TeamStanding s : standings) { %>
               <tr>
                 <td><%= s.getName() %></td>
                 <td><%= s.getPlayed() %></td>
                 <td><%= s.getPoints() %></td>
-                <td><%= String.format("%.2f", s.getNrr()) %></td>
+                <td><%= String.format(java.util.Locale.US, "%.2f", s.getNrr()) %></td>
               </tr>
             <% } %>
           </table>
@@ -262,31 +269,42 @@ tr:hover td {
       </div>
     </div>
 
-    <!-- RIGHT: Teams & Players -->
     <div class="panel">
       <h2>Teams & Players</h2>
-      <% if (teamsPlayers == null || teamsPlayers.isEmpty()) { %>
-        <p>No team or player data available.</p>
-      <% } else {
-           for (Map.Entry<String, List<String>> e : teamsPlayers.entrySet()) { %>
-        <div class="teamBox">
-          <div style="font-weight:800; margin-bottom:6px;">🏏 <%= e.getKey() %></div>
-          <div class="players">
-            <ul style="margin:0; padding-left:16px;">
-              <% for (String p : e.getValue()) { %>
-                <li><%= p %></li>
+      <% if (teamPlayers == null || teamPlayers.isEmpty()) { %>
+        <div class="empty">Teams and player statistics will appear once squads are published.</div>
+      <% } else { %>
+        <div class="players-panel">
+          <% for (Map.Entry<String, List<Map<String,Object>>> entry : teamPlayers.entrySet()) { %>
+            <div class="team-box">
+              <h4>🏏 <%= entry.getKey() %></h4>
+              <% List<Map<String,Object>> players = entry.getValue(); %>
+              <% if (players == null || players.isEmpty()) { %>
+                <div class="empty" style="margin:0;">No player statistics available yet.</div>
+              <% } else { %>
+                <table class="players-table">
+                  <tr><th>Player</th><th>Matches</th><th>Runs</th><th>Wickets</th></tr>
+                  <% for (Map<String,Object> p : players) { %>
+                    <tr>
+                      <td><%= p.get("name") %></td>
+                      <td style="text-align:center;"><%= p.get("matches") %></td>
+                      <td style="text-align:center;"><%= p.get("runs") %></td>
+                      <td style="text-align:center;"><%= p.get("wickets") %></td>
+                    </tr>
+                  <% } %>
+                </table>
               <% } %>
-            </ul>
-          </div>
+            </div>
+          <% } %>
         </div>
-      <% } } %>
+      <% } %>
     </div>
   </div>
 
   <script>
-    // Prevent cached navigation
-    window.history.replaceState && window.history.replaceState(null, "", window.location.href);
-    window.onpopstate = function(){ window.location.replace("tournament_home.jsp"); };
+    if (history.replaceState) {
+      history.replaceState(null, '', location.href);
+    }
   </script>
 </body>
 </html>

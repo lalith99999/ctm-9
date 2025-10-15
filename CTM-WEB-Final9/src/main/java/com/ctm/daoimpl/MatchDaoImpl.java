@@ -134,18 +134,21 @@ public class MatchDaoImpl implements MatchDao {
     @Override
     public List<Map<String, Object>> liveTournamentCounts() {
         String sql =
-            "SELECT m.tournament_id AS id, t.name, COUNT(*) AS cnt " +
-            "FROM matches m JOIN tournaments t ON t.tournament_id = m.tournament_id " +
-            "WHERE m.status=? GROUP BY m.tournament_id, t.name ORDER BY t.name";
+            "SELECT t.tournament_id, t.name, " +
+            "       COUNT(CASE WHEN m.status=? THEN 1 END) AS live_count " +
+            "FROM tournaments t " +
+            "LEFT JOIN matches m ON m.tournament_id = t.tournament_id " +
+            "GROUP BY t.tournament_id, t.name " +
+            "ORDER BY t.name";
         List<Map<String, Object>> list = new ArrayList<>();
         try (PreparedStatement ps = DaoUtil.getMyPreparedStatement(sql)) {
             ps.setString(1, STATUS_LIVE);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> row = new HashMap<>();
-                    row.put("id", rs.getLong("id"));
-                    row.put("name", rs.getString("name"));
-                    row.put("count", rs.getInt("cnt"));
+                    row.put("tournament_id", rs.getLong("tournament_id"));
+                    row.put("tournament_name", rs.getString("name"));
+                    row.put("live_count", rs.getInt("live_count"));
                     list.add(row);
                 }
             }
@@ -154,24 +157,28 @@ public class MatchDaoImpl implements MatchDao {
     }
 
     @Override
-    public List<Match> getLiveMatchesByTournament(long tournamentId) {
+    public List<Match> getMatchesByTournament(long tournamentId) {
         String sql =
-            "SELECT m.match_id, m.tournament_id, m.team_a_id, m.team_b_id, " +
+            "SELECT m.match_id, m.tournament_id, m.team_a_id, m.team_b_id, m.status, " +
             "       ta.name AS team_a_name, tb.name AS team_b_name, m.datetime, m.venue, " +
             "       m.a_runs, m.a_wkts, m.a_extras, m.a_overs, " +
-            "       m.b_runs, m.b_wkts, m.b_extras, m.b_overs, m.first_innings_team_id, m.toss_winner_id, m.toss_decision " +
+            "       m.b_runs, m.b_wkts, m.b_extras, m.b_overs, m.first_innings_team_id, " +
+            "       m.toss_winner_id, m.toss_decision, m.result, m.winner_team_id " +
             "FROM matches m " +
             "JOIN teams ta ON ta.team_id = m.team_a_id " +
             "JOIN teams tb ON tb.team_id = m.team_b_id " +
-            "WHERE m.tournament_id=? AND m.status=? ORDER BY m.match_id";
+            "WHERE m.tournament_id=? ORDER BY m.match_id";
         List<Match> list = new ArrayList<>();
         try (PreparedStatement ps = DaoUtil.getMyPreparedStatement(sql)) {
             ps.setLong(1, tournamentId);
-            ps.setString(2, STATUS_LIVE);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Match m = mapMatch(rs);
                     populateScores(rs, m);
+                    String status = rs.getString("status");
+                    try { m.setStatus(MatchStatus.valueOf(status)); } catch (Exception ignore) {}
+                    m.setResult(rs.getString("result"));
+                    m.setWinnerTeamId(getLong(rs, "winner_team_id"));
                     list.add(m);
                 }
             }
@@ -212,12 +219,13 @@ public class MatchDaoImpl implements MatchDao {
     }
 
     @Override
-    public boolean lockFirstInnings(long matchId, long battingTeamId, int runs, int wickets, double overs, int extras) {
+    public boolean lockFirstInnings(long matchId, int runs, int wickets, double overs, int extras) {
         String select =
-            "SELECT tournament_id, team_a_id, team_b_id, first_innings_team_id, status " +
-            "FROM matches WHERE match_id=? FOR UPDATE";
+            "SELECT m.tournament_id, m.team_a_id, m.team_b_id, m.first_innings_team_id, m.status, " +
+            "       m.a_runs, m.a_wkts, m.a_overs, m.b_runs, m.b_wkts, m.b_overs " +
+            "FROM matches m WHERE m.match_id=? FOR UPDATE";
         String update =
-            "UPDATE matches SET first_innings_team_id=?, %s_runs=?, %s_wkts=?, %s_overs=?, %s_extras=? WHERE match_id=?";
+            "UPDATE matches SET %s_runs=?, %s_wkts=?, %s_overs=?, %s_extras=? WHERE match_id=?";
 
         try (Connection con = DaoUtil.getMyConnection();
              PreparedStatement psSelect = con.prepareStatement(select)) {
@@ -226,24 +234,31 @@ public class MatchDaoImpl implements MatchDao {
             try (ResultSet rs = psSelect.executeQuery()) {
                 if (!rs.next()) { con.rollback(); return false; }
                 if (!STATUS_LIVE.equals(rs.getString("status"))) { con.rollback(); return false; }
-                if (rs.getObject("first_innings_team_id") != null) { con.rollback(); return false; }
+
+                Long firstTeamObj = getLong(rs, "first_innings_team_id");
+                if (firstTeamObj == null) { con.rollback(); return false; }
 
                 long teamA = rs.getLong("team_a_id");
                 long teamB = rs.getLong("team_b_id");
-                if (battingTeamId != teamA && battingTeamId != teamB) { con.rollback(); return false; }
+                long firstTeam = firstTeamObj;
+                if (firstTeam != teamA && firstTeam != teamB) { con.rollback(); return false; }
 
-                if (!validateInnings(runs, wickets, overs, true)) { con.rollback(); return false; }
+                String prefix = (firstTeam == teamA) ? "a" : "b";
+                double existingOvers = rs.getDouble(prefix.equals("a") ? "a_overs" : "b_overs");
+                int existingRuns = rs.getInt(prefix.equals("a") ? "a_runs" : "b_runs");
+                int existingWkts = rs.getInt(prefix.equals("a") ? "a_wkts" : "b_wkts");
+                if (existingOvers > 1e-6 || existingRuns > 0 || existingWkts > 0) { con.rollback(); return false; }
+
+                if (!isValidOvers(overs) || !validateFirstInnings(runs, wickets, overs)) { con.rollback(); return false; }
                 if (extras < 0) { con.rollback(); return false; }
 
-                String prefix = (battingTeamId == teamA) ? "a" : "b";
                 String sql = String.format(update, prefix, prefix, prefix, prefix);
                 try (PreparedStatement psUpdate = con.prepareStatement(sql)) {
-                    psUpdate.setLong(1, battingTeamId);
-                    psUpdate.setInt(2, runs);
-                    psUpdate.setInt(3, wickets);
-                    psUpdate.setDouble(4, overs);
-                    psUpdate.setInt(5, extras);
-                    psUpdate.setLong(6, matchId);
+                    psUpdate.setInt(1, runs);
+                    psUpdate.setInt(2, wickets);
+                    psUpdate.setDouble(3, overs);
+                    psUpdate.setInt(4, extras);
+                    psUpdate.setLong(5, matchId);
                     if (psUpdate.executeUpdate() == 0) { con.rollback(); return false; }
                 }
             }
@@ -259,16 +274,14 @@ public class MatchDaoImpl implements MatchDao {
     public boolean lockSecondInnings(long matchId, int runs, int wickets, double overs, int extras) {
         String select =
             "SELECT m.tournament_id, m.team_a_id, m.team_b_id, m.first_innings_team_id, m.status, " +
-            "       m.a_runs, m.a_wkts, m.a_extras, m.a_overs, " +
-            "       m.b_runs, m.b_wkts, m.b_extras, m.b_overs, " +
+            "       m.a_runs, m.a_wkts, m.a_overs, m.b_runs, m.b_wkts, m.b_overs, " +
             "       ta.name AS team_a_name, tb.name AS team_b_name " +
             "FROM matches m " +
             "JOIN teams ta ON ta.team_id = m.team_a_id " +
             "JOIN teams tb ON tb.team_id = m.team_b_id " +
             "WHERE m.match_id=? FOR UPDATE";
         String update =
-            "UPDATE matches SET %s_runs=?, %s_wkts=?, %s_overs=?, %s_extras=?, " +
-            "winner_team_id=?, result=?, status=? WHERE match_id=?";
+            "UPDATE matches SET %s_runs=?, %s_wkts=?, %s_overs=?, %s_extras=? WHERE match_id=?";
 
         try (Connection con = DaoUtil.getMyConnection();
              PreparedStatement psSelect = con.prepareStatement(select)) {
@@ -281,58 +294,122 @@ public class MatchDaoImpl implements MatchDao {
                 Long firstTeamObj = getLong(rs, "first_innings_team_id");
                 if (firstTeamObj == null) { con.rollback(); return false; }
 
-                long tournamentId = rs.getLong("tournament_id");
                 long teamA = rs.getLong("team_a_id");
                 long teamB = rs.getLong("team_b_id");
                 long firstTeam = firstTeamObj;
                 long secondTeam = (firstTeam == teamA) ? teamB : teamA;
 
-                int firstRuns = (firstTeam == teamA) ? rs.getInt("a_runs") : rs.getInt("b_runs");
+                String firstPrefix = (firstTeam == teamA) ? "a" : "b";
+                String secondPrefix = (secondTeam == teamA) ? "a" : "b";
+
+                double firstOvers = rs.getDouble(firstPrefix.equals("a") ? "a_overs" : "b_overs");
+                int firstRuns = (firstPrefix.equals("a")) ? rs.getInt("a_runs") : rs.getInt("b_runs");
+                int firstWkts = (firstPrefix.equals("a")) ? rs.getInt("a_wkts") : rs.getInt("b_wkts");
+                if (firstOvers < 1e-6 && firstRuns == 0 && firstWkts == 0) { con.rollback(); return false; }
+
+                double secondOversExisting = rs.getDouble(secondPrefix.equals("a") ? "a_overs" : "b_overs");
+                int secondRunsExisting = (secondPrefix.equals("a")) ? rs.getInt("a_runs") : rs.getInt("b_runs");
+                int secondWktsExisting = (secondPrefix.equals("a")) ? rs.getInt("a_wkts") : rs.getInt("b_wkts");
+                if (secondOversExisting > 1e-6 || secondRunsExisting > 0 || secondWktsExisting > 0) { con.rollback(); return false; }
+
                 int target = firstRuns + 1;
-
-                if (!validateInnings(runs, wickets, overs, false)) { con.rollback(); return false; }
-                if (extras < 0) { con.rollback(); return false; }
                 if (runs > target + 5) { con.rollback(); return false; }
+                if (!isValidOvers(overs) || !validateSecondInnings(runs, wickets, overs, target)) { con.rollback(); return false; }
+                if (extras < 0) { con.rollback(); return false; }
 
-                String prefix = (secondTeam == teamA) ? "a" : "b";
-
-                Long winnerTeamId = null;
-                String resultText;
-                boolean tie = runs == firstRuns;
-                if (tie) {
-                    resultText = "Match tied";
-                } else if (runs >= target) {
-                    winnerTeamId = secondTeam;
-                    int wicketsRemaining = Math.max(0, 10 - wickets);
-                    String name = (secondTeam == teamA) ? rs.getString("team_a_name") : rs.getString("team_b_name");
-                    resultText = name + " won by " + wicketsRemaining + " wicket" + (wicketsRemaining == 1 ? "" : "s");
-                } else {
-                    winnerTeamId = firstTeam;
-                    int margin = firstRuns - runs;
-                    String name = (firstTeam == teamA) ? rs.getString("team_a_name") : rs.getString("team_b_name");
-                    resultText = name + " won by " + margin + " run" + (margin == 1 ? "" : "s");
-                }
-
-                String sql = String.format(update, prefix, prefix, prefix, prefix);
+                String sql = String.format(update, secondPrefix, secondPrefix, secondPrefix, secondPrefix);
                 try (PreparedStatement psUpdate = con.prepareStatement(sql)) {
                     psUpdate.setInt(1, runs);
                     psUpdate.setInt(2, wickets);
                     psUpdate.setDouble(3, overs);
                     psUpdate.setInt(4, extras);
-                    if (winnerTeamId == null && !tie) {
-                        psUpdate.setNull(5, java.sql.Types.NUMERIC);
-                    } else if (tie) {
-                        psUpdate.setNull(5, java.sql.Types.NUMERIC);
+                    psUpdate.setLong(5, matchId);
+                    if (psUpdate.executeUpdate() == 0) { con.rollback(); return false; }
+                }
+            }
+            con.commit();
+            return true;
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
+    public boolean finalizeMatch(long matchId) {
+        String select =
+            "SELECT m.tournament_id, m.team_a_id, m.team_b_id, m.status, m.first_innings_team_id, " +
+            "       m.a_runs, m.a_wkts, m.a_overs, m.b_runs, m.b_wkts, m.b_overs, " +
+            "       ta.name AS team_a_name, tb.name AS team_b_name " +
+            "FROM matches m " +
+            "JOIN teams ta ON ta.team_id = m.team_a_id " +
+            "JOIN teams tb ON tb.team_id = m.team_b_id " +
+            "WHERE m.match_id=? FOR UPDATE";
+        String update =
+            "UPDATE matches SET winner_team_id=?, result=?, status=? WHERE match_id=?";
+
+        try (Connection con = DaoUtil.getMyConnection();
+             PreparedStatement psSelect = con.prepareStatement(select)) {
+            con.setAutoCommit(false);
+            psSelect.setLong(1, matchId);
+            try (ResultSet rs = psSelect.executeQuery()) {
+                if (!rs.next()) { con.rollback(); return false; }
+                if (!STATUS_LIVE.equals(rs.getString("status"))) { con.rollback(); return false; }
+
+                Long firstTeamObj = getLong(rs, "first_innings_team_id");
+                if (firstTeamObj == null) { con.rollback(); return false; }
+
+                long teamA = rs.getLong("team_a_id");
+                long teamB = rs.getLong("team_b_id");
+                long firstTeam = firstTeamObj;
+                long secondTeam = (firstTeam == teamA) ? teamB : teamA;
+
+                String firstPrefix = (firstTeam == teamA) ? "a" : "b";
+                String secondPrefix = (secondTeam == teamA) ? "a" : "b";
+
+                double firstOvers = rs.getDouble(firstPrefix.equals("a") ? "a_overs" : "b_overs");
+                double secondOvers = rs.getDouble(secondPrefix.equals("a") ? "a_overs" : "b_overs");
+                int firstRuns = (firstPrefix.equals("a")) ? rs.getInt("a_runs") : rs.getInt("b_runs");
+                int secondRuns = (secondPrefix.equals("a")) ? rs.getInt("a_runs") : rs.getInt("b_runs");
+                int secondWkts = (secondPrefix.equals("a")) ? rs.getInt("a_wkts") : rs.getInt("b_wkts");
+
+                if ((firstOvers < 1e-6 && firstRuns == 0) || (secondOvers < 1e-6 && secondRuns == 0 && secondWkts == 0)) {
+                    con.rollback();
+                    return false;
+                }
+
+                int target = firstRuns + 1;
+                boolean tie = secondRuns == firstRuns;
+                Long winnerTeamId = null;
+                String resultText;
+
+                if (tie) {
+                    resultText = "Match tied";
+                } else if (secondRuns >= target) {
+                    winnerTeamId = secondTeam;
+                    int wicketsRemaining = Math.max(0, 10 - secondWkts);
+                    String name = (secondTeam == teamA) ? rs.getString("team_a_name") : rs.getString("team_b_name");
+                    resultText = name + " won by " + wicketsRemaining + " wicket" + (wicketsRemaining == 1 ? "" : "s");
+                } else {
+                    winnerTeamId = firstTeam;
+                    int margin = firstRuns - secondRuns;
+                    String name = (firstTeam == teamA) ? rs.getString("team_a_name") : rs.getString("team_b_name");
+                    resultText = name + " won by " + margin + " run" + (margin == 1 ? "" : "s");
+                }
+
+                try (PreparedStatement psUpdate = con.prepareStatement(update)) {
+                    if (winnerTeamId == null) {
+                        psUpdate.setNull(1, java.sql.Types.NUMERIC);
                     } else {
-                        psUpdate.setLong(5, winnerTeamId);
+                        psUpdate.setLong(1, winnerTeamId);
                     }
-                    psUpdate.setString(6, resultText);
-                    psUpdate.setString(7, STATUS_FINISHED);
-                    psUpdate.setLong(8, matchId);
+                    psUpdate.setString(2, resultText);
+                    psUpdate.setString(3, STATUS_FINISHED);
+                    psUpdate.setLong(4, matchId);
                     if (psUpdate.executeUpdate() == 0) { con.rollback(); return false; }
                 }
 
-                applyPoints(con, tournamentId, teamA, teamB, winnerTeamId, tie);
+                applyPoints(con, rs.getLong("tournament_id"), teamA, teamB, winnerTeamId, tie);
             }
             con.commit();
             return true;
@@ -394,16 +471,31 @@ public class MatchDaoImpl implements MatchDao {
         return rs.wasNull() ? null : value;
     }
 
-    private boolean validateInnings(int runs, int wickets, double overs, boolean enforceFullOvers) {
-        if (runs < 0 || wickets < 0 || wickets > 10) return false;
+    private boolean isValidOvers(double overs) {
         if (overs < 0.0 || overs > 20.0) return false;
-        if (enforceFullOvers && wickets < 10 && Math.abs(overs - 20.0) > 1e-3) return false;
+        double scaled = overs * 10.0;
+        long rounded = Math.round(scaled);
+        if (Math.abs(scaled - rounded) > 1e-6) return false;
+        int balls = (int) (rounded % 10);
+        return balls <= 5;
+    }
+
+    private boolean validateFirstInnings(int runs, int wickets, double overs) {
+        if (runs < 0 || wickets < 0 || wickets > 10) return false;
+        if (wickets < 10 && Math.abs(overs - 20.0) > 1e-6) return false;
         return true;
     }
 
-	@Override
-	public Optional<Match> startMatch(long matchId) {
-		// TODO Auto-generated method stub
-		return Optional.empty();
-	}
+    private boolean validateSecondInnings(int runs, int wickets, double overs, int target) {
+        if (runs < 0 || wickets < 0 || wickets > 10) return false;
+        boolean allOut = wickets == 10;
+        boolean fullOvers = Math.abs(overs - 20.0) <= 1e-6;
+        boolean chased = runs >= target;
+        return allOut || fullOvers || chased;
+    }
+
+    @Override
+    public Optional<Match> startMatch(long matchId) {
+        return Optional.empty();
+    }
 }

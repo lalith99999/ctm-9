@@ -20,7 +20,7 @@ public class TournamentDetailsServlet extends HttpServlet {
 
   // SQLs used for read-only views
   private static final String SQL_MATCHES =
-      "SELECT m.match_id, ta.name a_name, tb.name b_name, m.status, m.datetime, m.venue, " +
+      "SELECT m.match_id, ta.name a_name, tb.name b_name, m.status, m.datetime, m.venue, m.result, " +
       "       m.a_runs, m.a_wkts, m.a_overs, m.b_runs, m.b_wkts, m.b_overs " +
       "FROM matches m " +
       "JOIN teams ta ON ta.team_id = m.team_a_id " +
@@ -62,12 +62,27 @@ public class TournamentDetailsServlet extends HttpServlet {
 
     // matches + team->players via helper methods
     List<Map<String,Object>> matches = loadMatches(tid);
+    List<Map<String,Object>> scheduled = new ArrayList<>();
+    List<Map<String,Object>> live = new ArrayList<>();
+    List<Map<String,Object>> finished = new ArrayList<>();
+    for (Map<String,Object> m : matches) {
+      String status = String.valueOf(m.get("status"));
+      if ("SCHEDULED".equalsIgnoreCase(status)) {
+        scheduled.add(m);
+      } else if ("LIVE".equalsIgnoreCase(status)) {
+        live.add(m);
+      } else {
+        finished.add(m);
+      }
+    }
     Map<String,List<Map<String,Object>>> teamPlayers = loadTeamPlayersByTournament(tid, standings);
 
     // to JSP
     req.setAttribute("tournament", tournament);
     req.setAttribute("standings", standings);
-    req.setAttribute("matches", matches);
+    req.setAttribute("scheduledMatches", scheduled);
+    req.setAttribute("liveMatches", live);
+    req.setAttribute("finishedMatches", finished);
     req.setAttribute("teamPlayers", teamPlayers);
     req.getRequestDispatcher("tournament_details.jsp").forward(req, resp);
   }
@@ -86,6 +101,7 @@ public class TournamentDetailsServlet extends HttpServlet {
           m.put("status", rs.getString("status"));
           m.put("datetime", rs.getString("datetime"));
           m.put("venue", rs.getString("venue"));
+          m.put("result", rs.getString("result"));
           m.put("aRuns", rs.getObject("a_runs"));   m.put("aWkts", rs.getObject("a_wkts"));   m.put("aOvers", rs.getObject("a_overs"));
           m.put("bRuns", rs.getObject("b_runs"));   m.put("bWkts", rs.getObject("b_wkts"));   m.put("bOvers", rs.getObject("b_overs"));
           list.add(m);
